@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Web App Pentesting Enumeration Script
 Usage: python webapp_enum.py -u https://target.com [options]
@@ -345,10 +346,11 @@ def enum_paths(base_url, wordlist=None):
       -u <url>/FUZZ  : FUZZ is the placeholder ffuf replaces with each word
       -w <wordlist>  : path to a newline-separated wordlist file
       -mc 200,204,...: only report responses with these status codes
+                       We only show: 200/204 (success) and 401/403 (path exists
+                       but protected). Redirects and 405s are hidden — too noisy.
       -ac            : auto-calibrate — silently filters out false positives
                        by learning what a "not found" response looks like
       -t 100         : 100 concurrent threads for speed
-      -v             : verbose output so we see the full URL per result
 
     Recommended wordlists (from SecLists):
       Discovery/Web-Content/common.txt          (~5k words, fast)
@@ -359,11 +361,10 @@ def enum_paths(base_url, wordlist=None):
     Python's requests library with threading. Slower and less thorough but
     requires no extra tools.
 
-    Status code meanings:
-      200/201/204 – Publicly accessible   [HIGH priority]
-      301/302/307 – Redirect (resource likely exists elsewhere)
-      401         – Auth required but path EXISTS
-      403         – Forbidden but path EXISTS
+    Status code meanings reported:
+      200/204 – Publicly accessible          [HIGH priority]
+      401     – Auth required but path EXISTS [worth investigating]
+      403     – Forbidden but path EXISTS     [worth investigating]
     """
     section("Directory / Path Enumeration")
     base_url = base_url.rstrip("/")
@@ -375,10 +376,9 @@ def enum_paths(base_url, wordlist=None):
             "ffuf",
             "-u", f"{base_url}/FUZZ",
             "-w", wordlist,
-            "-mc", "200,204,301,302,307,401,403,405",  # status codes to report
+            "-mc", "200,204,401,403",  # only show successes + protected paths (no noisy redirects)
             "-ac",       # auto-calibrate to suppress false positives
             "-t", "100", # threads
-            "-v",        # verbose: shows full URL in output
         ]
         subprocess.run(cmd)
         return
@@ -400,10 +400,9 @@ def enum_paths(base_url, wordlist=None):
                     "ffuf",
                     "-u", f"{base_url}/FUZZ",
                     "-w", path,
-                    "-mc", "200,204,301,302,307,401,403,405",
+                    "-mc", "200,204,401,403",  # only show successes + protected paths (no noisy redirects)
                     "-ac",
                     "-t", "100",
-                    "-v",
                 ]
                 subprocess.run(cmd)
                 return
@@ -573,24 +572,35 @@ def enum_ports(host):
     """
     section("Port Scanning (RustScan → Nmap)")
 
-    if not check_tool("rustscan"):
+    # On Linux/macOS, nmap's -sV (version detection) and -sC (default scripts)
+    # use raw sockets which require root privileges. Without sudo, nmap will
+    # silently produce no output or fall back to a degraded scan.
+    # Run the whole script with: sudo python3 webapp_enum.py ...
+    if sys.platform != "win32" and os.geteuid() != 0:
+        warn("Port scanning requires root on Linux — no output will appear without it.")
+        warn("Re-run with: sudo python3 webapp_enum.py ...")
+        warn("Attempting anyway in case your setup allows it...")
+
+    # Check both tools up front and report clearly which one is missing
+    rs_ok  = check_tool("rustscan")
+    nm_ok  = check_tool("nmap")
+
+    if not rs_ok:
         warn("rustscan not found in PATH — skipping port scan.")
-        warn("Install: https://github.com/RustScan/RustScan")
+        warn("  Verify it's installed: rustscan --version")
+        warn("  Install from        : https://github.com/RustScan/RustScan")
         return
 
-    if not check_tool("nmap"):
-        warn("nmap not found in PATH — rustscan needs nmap to fingerprint services.")
-        warn("Install: https://nmap.org/download.html")
+    if not nm_ok:
+        warn("nmap not found in PATH — rustscan requires nmap for service fingerprinting.")
+        warn("  Verify it's installed: nmap --version")
+        warn("  Install from        : https://nmap.org/download.html")
         return
-
-    info(f"Launching RustScan → Nmap against {host} (all 65535 ports) ...")
-    info("This may take a moment. RustScan output will appear below.")
 
     cmd = [
         "rustscan",
         "-a", host,
         "-b", str(RUSTSCAN_BATCH),  # batch size (set in USER CONFIG at top of file)
-        "--ulimit", "5000", # max open file descriptors
         "--range", "1-65535",
         "--",               # everything after this is passed to nmap
         "-sV",              # service version detection
@@ -598,9 +608,25 @@ def enum_ports(host):
         "--open",           # only show open ports
     ]
 
-    # Run with output streaming directly to the terminal so the user sees
-    # results in real time rather than waiting for the full scan to finish.
-    subprocess.run(cmd)
+    # --ulimit raises the open file descriptor limit on Linux/macOS so rustscan
+    # can hold thousands of connections open simultaneously. It is not supported
+    # on Windows and will cause rustscan to exit immediately if included.
+    if sys.platform != "win32":
+        cmd.insert(3, "5000")
+        cmd.insert(3, "--ulimit")
+
+    # Print the exact command being run — useful for debugging and for juniors
+    # learning what flags are being passed to each tool
+    info(f"Running: {' '.join(cmd)}")
+    info("RustScan output appears below (may take a moment)...")
+    print()
+
+    # Run with output streaming directly to the terminal (no capture_output)
+    # so results appear in real time as rustscan finds open ports
+    result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        warn(f"RustScan exited with code {result.returncode} — scan may be incomplete.")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
