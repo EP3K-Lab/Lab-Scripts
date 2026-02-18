@@ -225,6 +225,15 @@ def check_tool(name):
     that excludes user directories like ~/.cargo/bin — we fall back to checking
     a list of common installation locations manually.
 
+    KEY PROBLEM: when you run `sudo python3 script.py`, even with -E, some sudo
+    configs reset HOME to /root. That means os.path.expanduser("~/.cargo/bin")
+    becomes /root/.cargo/bin instead of /home/youruser/.cargo/bin — so tools
+    installed under your user account won't be found.
+
+    FIX: We read the SUDO_USER environment variable (always set by sudo to the
+    original caller's username) and use the pwd module to look up their real home
+    directory from /etc/passwd. This works regardless of what HOME is set to.
+
     Returns the resolved path string if found, or None if not installed.
     Use as a boolean: `if check_tool("rustscan"):` still works fine.
     """
@@ -232,17 +241,37 @@ def check_tool(name):
     if found:
         return found
 
-    # Common install locations that sudo's restricted PATH often misses:
-    #   ~/.cargo/bin  — Rust/cargo installs (rustscan, etc.)
-    #   ~/go/bin      — Go installs (subfinder, ffuf, etc.)
-    #   /usr/local/bin — manual / package manager installs
+    # Determine the real user's home directory.
+    # Under sudo, SUDO_USER is the original username (e.g. "kali").
+    # We use pwd to look up their home from /etc/passwd — this is reliable
+    # even if HOME has been reset to /root by sudo.
+    user_home = None
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            import pwd
+            user_home = pwd.getpwnam(sudo_user).pw_dir
+        except Exception:
+            pass  # pwd not available or user not found — fall back below
+
+    if not user_home:
+        # Not running under sudo, or pwd lookup failed — use current HOME
+        user_home = os.path.expanduser("~")
+
+    # Build the list of extra directories to search.
+    # Covers: Rust/cargo installs, Go installs, pipx/local installs,
+    # system-wide installs, snap packages, and root's equivalents as a last resort.
     extra_dirs = [
-        os.path.expanduser("~/.cargo/bin"),
-        os.path.expanduser("~/go/bin"),
-        "/usr/local/bin",
+        os.path.join(user_home, ".cargo", "bin"),   # rustscan (installed via cargo)
+        os.path.join(user_home, "go", "bin"),        # subfinder, ffuf (installed via go install)
+        os.path.join(user_home, ".local", "bin"),    # pipx and manual installs
+        "/usr/local/bin",                            # manual installs, Homebrew
         "/usr/local/sbin",
-        os.path.expanduser("~/.local/bin"),
+        "/snap/bin",                                 # snap-installed tools (Ubuntu/Kali)
+        "/root/.cargo/bin",                          # tools installed as root via cargo
+        "/root/go/bin",                              # tools installed as root via go
     ]
+
     for directory in extra_dirs:
         candidate = os.path.join(directory, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
@@ -621,9 +650,28 @@ def enum_ports(host):
     nm_ok  = check_tool("nmap")
 
     if not rs_ok:
-        warn("rustscan not found in PATH — skipping port scan.")
-        warn("  Verify it's installed: rustscan --version")
-        warn("  Install from        : https://github.com/RustScan/RustScan")
+        warn("rustscan not found — skipping port scan.")
+        # Print the directories that were searched so you can debug where it's actually installed
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            try:
+                import pwd
+                user_home = pwd.getpwnam(sudo_user).pw_dir
+            except Exception:
+                user_home = os.path.expanduser("~")
+        else:
+            user_home = os.path.expanduser("~")
+        searched = [
+            "PATH (via shutil.which)",
+            os.path.join(user_home, ".cargo", "bin"),
+            os.path.join(user_home, "go", "bin"),
+            os.path.join(user_home, ".local", "bin"),
+            "/usr/local/bin", "/snap/bin",
+            "/root/.cargo/bin", "/root/go/bin",
+        ]
+        warn(f"  Searched in: {', '.join(searched)}")
+        warn("  Run 'which rustscan' or 'find / -name rustscan 2>/dev/null' to find it")
+        warn("  Install from: https://github.com/RustScan/RustScan")
         return
 
     if not nm_ok:
