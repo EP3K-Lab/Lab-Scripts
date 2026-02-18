@@ -183,16 +183,21 @@ def run_rustscan(host, batch=RUSTSCAN_BATCH, timeout=RUSTSCAN_TIMEOUT):
     # We extract everything after "Ports:" and pull out the port numbers.
     ports = []
     for line in result.stdout.splitlines():
-        if "Ports:" not in line:
-            continue
-        # Grab the Ports section of the line
-        ports_section = line.split("Ports:", 1)[1]
-        # Each entry looks like "22/open/tcp//ssh///" — grab the leading number
-        for entry in ports_section.split(","):
-            entry = entry.strip()
-            match = re.match(r"^(\d+)/open/", entry)
-            if match:
-                ports.append(int(match.group(1)))
+        # Handle new format: "10.0.0.108 -> [445,135,139]"
+        if "->" in line and "[" in line:
+            ports_section = line.split("[")[1].split("]")[0]
+            for port in ports_section.split(","):
+                port = port.strip()
+                if port.isdigit():
+                    ports.append(int(port))
+        # Handle old greppable format
+        elif "Ports:" in line:
+            ports_section = line.split("Ports:", 1)[1]
+            for entry in ports_section.split(","):
+                entry = entry.strip()
+                match = re.match(r"^(\d+)/open/", entry)
+                if match:
+                    ports.append(int(match.group(1)))
 
     ports = sorted(set(ports))  # deduplicate and sort numerically
 
