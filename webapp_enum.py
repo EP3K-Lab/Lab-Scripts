@@ -218,13 +218,37 @@ def get(url, allow_redirects=True):
 
 def check_tool(name):
     """
-    Check whether an external tool is available on the system PATH.
-    Uses shutil.which(), which searches PATH the same way the shell does.
-    Returns True if found, False if not installed or not in PATH.
+    Check whether an external tool is available, returning its full path or None.
 
-    Example: check_tool("ffuf") → True if ffuf is installed
+    Uses shutil.which() first (searches the current PATH). If that fails —
+    which happens when running under 'sudo' because sudo uses a restricted PATH
+    that excludes user directories like ~/.cargo/bin — we fall back to checking
+    a list of common installation locations manually.
+
+    Returns the resolved path string if found, or None if not installed.
+    Use as a boolean: `if check_tool("rustscan"):` still works fine.
     """
-    return shutil.which(name) is not None
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # Common install locations that sudo's restricted PATH often misses:
+    #   ~/.cargo/bin  — Rust/cargo installs (rustscan, etc.)
+    #   ~/go/bin      — Go installs (subfinder, ffuf, etc.)
+    #   /usr/local/bin — manual / package manager installs
+    extra_dirs = [
+        os.path.expanduser("~/.cargo/bin"),
+        os.path.expanduser("~/go/bin"),
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        os.path.expanduser("~/.local/bin"),
+    ]
+    for directory in extra_dirs:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return None
 
 # ─── Modules ──────────────────────────────────────────────────────────────────
 # Each function below is an independent enumeration module. They can be
