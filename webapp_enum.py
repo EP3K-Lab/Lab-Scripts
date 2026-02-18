@@ -473,7 +473,18 @@ def enum_dns(domain):
       Amass or Subfinder.
     """
     section("DNS Enumeration")
-    resolver = dns.resolver.Resolver()
+
+    # Build the DNS resolver. On some systems (Docker containers, minimal Linux
+    # installs, certain WSL setups) /etc/resolv.conf doesn't exist, which causes
+    # dnspython to crash on Resolver(). We catch that and fall back to well-known
+    # public nameservers (Google 8.8.8.8 and Cloudflare 1.1.1.1) instead.
+    try:
+        resolver = dns.resolver.Resolver()
+    except Exception:
+        info("No system DNS config found — falling back to 8.8.8.8 / 1.1.1.1")
+        resolver = dns.resolver.Resolver(configure=False)
+        resolver.nameservers = ["8.8.8.8", "1.1.1.1"]
+
     resolver.timeout = 4   # Seconds to wait for a single DNS query
     resolver.lifetime = 4  # Total time allowed for all retries on one query
 
